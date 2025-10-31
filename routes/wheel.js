@@ -59,6 +59,48 @@ router.get('/entries', auth, async (req, res) => {
 
 /**
  * @swagger
+ * /wheel/public-entries:
+ *   get:
+ *     summary: Get all wheel entries (public - no auth required)
+ *     tags: [Wheel]
+ *     responses:
+ *       200:
+ *         description: Wheel entries retrieved successfully
+ */
+router.get('/public-entries', async (req, res) => {
+    try {
+        // Get all users with their entry counts
+        const users = await User.find({ role: 'user', blocked: false })
+            .select('name instagramHandle totalEntries');
+
+        // Create wheel entries array
+        const wheelEntries = [];
+        
+        for (const user of users) {
+            // Add entries based on user's total entries
+            for (let i = 0; i < user.totalEntries; i++) {
+                wheelEntries.push({
+                    userId: user._id,
+                    userName: user.name,
+                    instagramHandle: user.instagramHandle
+                });
+            }
+        }
+
+        return successResponse(res, {
+            entries: wheelEntries,
+            totalEntries: wheelEntries.length,
+            totalUsers: users.length
+        }, 'Wheel entries retrieved successfully');
+
+    } catch (err) {
+        console.error('Get public wheel entries error:', err);
+        return errorResponse(res, err, 'Server Error');
+    }
+});
+
+/**
+ * @swagger
  * /wheel/spin:
  *   post:
  *     summary: Trigger a manual spin (SuperAdmin only)
@@ -455,11 +497,91 @@ router.get('/game-settings', async (req, res) => {
             shopifyStoreUrl: gameSettings.shopifyStoreUrl || '',
             shopifyEnabled: gameSettings.shopifyEnabled || false,
             gameStartTime: gameSettings.gameStartTime,
-            gameEndTime: gameSettings.gameEndTime
+            gameEndTime: gameSettings.gameEndTime,
+            countdownActive: gameSettings.timerActive
         }, 'Game settings retrieved successfully');
 
     } catch (err) {
         console.error('Get public game settings error:', err);
+        return errorResponse(res, err, 'Server Error');
+    }
+});
+
+/**
+ * @swagger
+ * /wheel/public-stats:
+ *   get:
+ *     summary: Get public wheel statistics (no auth required)
+ *     tags: [Wheel]
+ *     responses:
+ *       200:
+ *         description: Public statistics retrieved successfully
+ */
+router.get('/public-stats', async (req, res) => {
+    try {
+        const totalUsers = await User.countDocuments({ role: 'user', blocked: false });
+        const totalSpins = await Spin.countDocuments({ status: 'completed' });
+        const totalWinners = await Winner.countDocuments();
+        const totalEntries = await User.aggregate([
+            { $match: { role: 'user', blocked: false } },
+            { $group: { _id: null, total: { $sum: '$totalEntries' } } }
+        ]);
+
+        // Get latest winner
+        const latestWinner = await Winner.findOne()
+            .populate('userId', 'name instagramHandle')
+            .populate('spinId', 'spinId spinTime')
+            .sort({ winDate: -1 });
+
+        // Get recent winners
+        const recentWinners = await Winner.find()
+            .populate('userId', 'name instagramHandle')
+            .populate('spinId', 'spinId spinTime')
+            .sort({ winDate: -1 })
+            .limit(10);
+
+        // Get leaderboard
+        const leaderboard = await User.find({ role: 'user', blocked: false })
+            .select('name instagramHandle totalEntries totalShirtsPurchased isWinner')
+            .sort({ totalEntries: -1 })
+            .limit(10);
+
+        return successResponse(res, {
+            statistics: {
+                totalUsers,
+                totalSpins,
+                totalWinners,
+                totalEntries: totalEntries[0]?.total || 0
+            },
+            latestWinner: latestWinner && latestWinner.userId ? {
+                userId: latestWinner.userId._id,
+                userName: latestWinner.userName,
+                instagramHandle: latestWinner.userId.instagramHandle,
+                winDate: latestWinner.winDate,
+                prize: latestWinner.prize,
+                spinId: latestWinner.spinId ? latestWinner.spinId.spinId : null
+            } : null,
+            recentWinners: recentWinners.filter(winner => winner.userId).map(winner => ({
+                userId: winner.userId._id,
+                userName: winner.userName,
+                instagramHandle: winner.userId.instagramHandle,
+                winDate: winner.winDate,
+                prize: winner.prize,
+                spinId: winner.spinId ? winner.spinId.spinId : null
+            })),
+            leaderboard: leaderboard.map((user, index) => ({
+                rank: index + 1,
+                userId: user._id,
+                name: user.name,
+                instagramHandle: user.instagramHandle,
+                totalEntries: user.totalEntries,
+                totalShirtsPurchased: user.totalShirtsPurchased,
+                isWinner: user.isWinner
+            }))
+        }, 'Public statistics retrieved successfully');
+
+    } catch (err) {
+        console.error('Get public stats error:', err);
         return errorResponse(res, err, 'Server Error');
     }
 });
